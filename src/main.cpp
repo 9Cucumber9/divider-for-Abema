@@ -16,9 +16,9 @@ int loadTsPacket( std::ifstream* ifs_ptr , unsigned int *tsPacketBytes , size_t 
 
   if(!(*ifs_ptr)){                             //ファイルが無ければ終了
     std::ofstream errorLog( "error.txt" , std::ios::app);
-    std::cout << "yomikomi Error\n";
+    std::cout << "read Error\n";
     std::cout << (seek/188) << "\n";
-    errorLog << "yomikomi Error" << "\n" << "could not load the file.\n";
+    errorLog << "read Error" << "\n" << "could not read the file.\n";
     exit (1);
   }
   ifs_ptr->seekg( seek , std::ios::beg );
@@ -34,8 +34,8 @@ int loadTsPacket( std::ifstream* ifs_ptr , unsigned int *tsPacketBytes , size_t 
 
   if(tsPacketBytes[0]!=0x47){               //sync_byteが見つからなければ終了
     std::ofstream errorLog( "error.txt" , std::ios::app);
-    std::cout << "Not found 0x47\n";
-    errorLog << "Not found 0x47\nおそらくtsファイルではない、もしくはデータに欠損があります\nMaybe it's not a TS file , or some data are missing.\n";
+    std::cout << "'0x47' was not found\n";
+    errorLog << "'0x47' was not found\nおそらくtsファイルではない、もしくはデータに欠損があります\nMaybe it's not a TS file , or some data are missing.\n";
     errorLog << "Address(approximately):" << std::hex << seek << "\n";
     exit (1);
   }
@@ -78,8 +78,8 @@ int generateOutputPath( char* input, int chapter, int section, std::string* outp
   insertStr << "_" << std::setw(2) << std::setfill('0') << chapter << "-" << std::setw(2) << std::setfill('0') << section;
   if( inputStr.rfind(".") == std::string::npos ){
     std::ofstream errorLog( "error.txt" ,std::ios::app);
-    std::cout << "Not found file extension\n";
-    errorLog << "Not found file extension\n";
+    std::cout << "File extension was not found\n";
+    errorLog << "File extension was not found\n";
     exit (1);
   }
   *output = inputStr.insert(inputStr.rfind(".") , insertStr.str() );
@@ -107,7 +107,7 @@ int main(int argc , char* argv[]){
   ifs.open( argv[1] , std::ios::binary );
   output.open(outputPath , std::ios::binary | std::ios::app);
   result.open( "result.txt" , std::ios::app );
-  result << "####" << argv[1] << "####\n";
+  result << "###\n###" << argv[1] << "\n###\n";
 
   while( (fileSize/188) > packetNumber ){          //ファイルの末端に到達で終了
     loadTsPacket( ifs_ptr, tsPacketBytes, packetNumber*188 );
@@ -117,14 +117,14 @@ int main(int argc , char* argv[]){
         std::cout << "====PAT====\n" << "KiloByte:" << std::setw(6) << std::setfill('0') << std::dec 
                   << (packetNumber*188)/1024 << "/" << fileSize/1024 << "\n";
       }else{
-        std::cout << "====PAT====\n" << "MegaByte:" << std::setw(6) << std::setfill('0') << std::dec 
+        std::cout << "====PAT====\n" << "MegaByte:" << std::fixed << std::setprecision(1) << std::setw(6) << std::setfill('0') << std::dec 
                   << (packetNumber*188)/std::pow(1024 , 2) << "/" << fileSize/std::pow(1024,2) << "\n";
       }
       currentPMT_PID=read_PAT_Info(tsPacketBytes);
       std::cout << "===========\n";
 
       if( (previousPMT_PID != currentPMT_PID) && ( previousPMT_PID != -1 ) ){   //1つ前と今のPMT_PIDが異なり、かつpreviousPMT_PIDが初期値ではないときtrue
-        result << std::dec << "packet:" << packetNumber << "(Address:" << std::hex << packetNumber*188 << ") : ";
+        result << std::dec << "packet:" << std::setw(8) << std::setfill('0') << packetNumber << "(Address:" << std::setw(9) << std::setfill('0') << std::hex << packetNumber*188 << ") : ";
         result << std::dec << "PMT_PID change(" << previousPMT_PID << "->" << currentPMT_PID << ")\n";
         section = section + 1;
         output.close();
@@ -136,7 +136,7 @@ int main(int argc , char* argv[]){
     if( (fileSize/188) > (packetNumber+3) ){
       loadTsPacket( ifs_ptr ,tsPacketBytes ,(packetNumber+2)*188 );    //二つ先のパケットに「Copyleft」がないか検索
       if(search_Copyleft(tsPacketBytes)==1){
-        result << "************\n" << "found `Copyleft`\n" << "Maybe new program start at " << std::hex << (packetNumber-2)*188 << "\n************\n";
+        result << std::dec << "packet:" << std::setw(8) << std::setfill('0') << (packetNumber-2) << "(Address:" << std::setw(9) << std::setfill('0') << std::hex << (packetNumber-2)*188 << ") : Maybe new program start\n";
         chapter = chapter + 1;
         section = 1;
         output.close();
