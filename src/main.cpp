@@ -5,66 +5,93 @@
 #include <sstream>
 #include <cmath>
 #include <filesystem>
+#include <time.h>
+#include <thread>
+#include <chrono>
+#include <vector>
+#include <algorithm>
 
-int loadTsPacket( std::ifstream*, unsigned int* ,size_t);
-int read_PAT_Info( unsigned int* );
-int search_Copyleft( unsigned int* );
+int loadTsPacket( std::ifstream*, unsigned int*, size_t, size_t);
+int read_PAT_Info( unsigned int*, int, int, int&);
+int checkPCR( unsigned int*, int, int, unsigned long long*);
+int search_Copyleft( unsigned int*, int, int);
 int generateOutputPath( char*, int, int, std::string*);
 
-int loadTsPacket( std::ifstream* ifs_ptr , unsigned int *tsPacketBytes , size_t seek){
-  char temp[188];   //バイナリをここに一時的に代入
+int loadTsPacket( std::ifstream* ifs_ptr , unsigned int *tsPacketBytes , size_t fileSize, size_t seek){
+  char temp[1880];   //バイナリをここに一時的に代入
 
-  if(!(*ifs_ptr)){                             //ファイルが無ければ終了
-    std::ofstream errorLog( "error.txt" , std::ios::app);
-    std::cout << "read Error\n";
-    std::cout << (seek/188) << "\n";
-    errorLog << "read Error" << "\n" << "could not read the file.\n";
-    exit (1);
-  }
   ifs_ptr->seekg( seek , std::ios::beg );
-  ifs_ptr->read( temp , 188);
+  ifs_ptr->read( temp , 1880);
 
-  for (int i=0;i<188;i++){
+  for (int i=0;i<1880;i++){
     if(temp[i]>=0){
-      tsPacketBytes[i]=0+temp[i];
+      tsPacketBytes[i]=temp[i] + 0;
     }else{
-      tsPacketBytes[i]=temp[i]+0x100;       //128以上は負の数になっているので足して元の数値に戻す
+      tsPacketBytes[i]=temp[i] + 0x100;       //128以上は負の数になっているので足して元の数値に戻す
     }
   }
-
-  if(tsPacketBytes[0]!=0x47){               //sync_byteが見つからなければ終了
-    std::ofstream errorLog( "error.txt" , std::ios::app);
-    std::cout << "'0x47' was not found\n";
-    errorLog << "'0x47' was not found\nおそらくtsファイルではない、もしくはデータに欠損があります\nMaybe it's not a TS file , or some data are missing.\n";
-    errorLog << "Address(approximately):" << std::hex << seek << "\n";
-    exit (1);
+  for(int i=0; i<10; i++){
+    if( (seek + i*188) < fileSize){
+      if(tsPacketBytes[0+i*188]!=0x47){               //sync_byteが見つからなければ終了
+        std::ofstream errorLog( "error.txt" , std::ios::app);
+        std::cout << "'0x47' was not found\n";
+        errorLog << "'0x47' was not found\nおそらくtsファイルではない、もしくはデータに欠損があります\nMaybe it's not a TS file , or some data are missing.\n";
+        errorLog << "Address(approximately):" << std::hex << seek+(i*188) << "\n";
+        errorLog.close();
+        std::this_thread::sleep_for(std::chrono::milliseconds(3000));
+        exit (1);
+      }
+    }else{
+      for(int j=0; j<188; j++){
+        tsPacketBytes[j+i*188]=0;
+      }
+    }
   }
   return 0;
 }
 
-int read_PAT_Info( unsigned int *tsPacketBytes ){
+int read_PAT_Info( unsigned int *tsPacketBytes, int packetNumber, int i, int& previousPMT_PID ){
   unsigned int PID;
   unsigned int sectionLength;
   unsigned int transport_streamID;
   unsigned int programNumber;
-  unsigned int PMT_PID;
-  PID =                (tsPacketBytes[1]*0x100+tsPacketBytes[2])&0x1FFF;     //末尾の13bitを取る
-  sectionLength =      (tsPacketBytes[6]*0x100+tsPacketBytes[7])&0xFFF;      //末尾の12bitを取る
-  transport_streamID = (tsPacketBytes[8]*0x100+tsPacketBytes[9]);
-  programNumber =      (tsPacketBytes[13]*0x100+tsPacketBytes[14]);
-  PMT_PID =            (tsPacketBytes[15]*0x100+tsPacketBytes[16])&0x1FFF;   //末尾の13bitを取る
-  std::cout << "PID:"                << std::dec << PID << "\n";
-  std::cout << "sectionLength:"      << std::dec << sectionLength << "\n";
-  std::cout << "transport_streamID:" << std::dec << transport_streamID << "\n";
-  std::cout << "programNumber:"      << std::dec << programNumber << "\n";
-  std::cout << "PMT_PID:"            << std::dec << PMT_PID << "\n";
-  return PMT_PID;
+  unsigned int currentPMT_PID;
+  PID =                (tsPacketBytes[1+(i*188)]*0x100+tsPacketBytes[2+(i*188)])&0x1FFF;     //末尾の13bitを取る
+  sectionLength =      (tsPacketBytes[6+(i*188)]*0x100+tsPacketBytes[7+(i*188)])&0xFFF;      //末尾の12bitを取る
+  transport_streamID = (tsPacketBytes[8+(i*188)]*0x100+tsPacketBytes[9+(i*188)]);
+  programNumber =      (tsPacketBytes[13+(i*188)]*0x100+tsPacketBytes[14+(i*188)]);
+  currentPMT_PID =            (tsPacketBytes[15+(i*188)]*0x100+tsPacketBytes[16+(i*188)])&0x1FFF;   //末尾の13bitを取る
+  if( (previousPMT_PID != currentPMT_PID) && ( previousPMT_PID != -1 ) ){
+    previousPMT_PID = currentPMT_PID;
+    return 1;
+  }
+  previousPMT_PID = currentPMT_PID;
+  return 0;
 }
 
-int search_Copyleft(unsigned int* tsPacketBytes){     //(C,o,p,y,l,e,f,t)==(0x43,0x6f,0x70,0x79,0x6c,0x65,0x66,0x74)
-  for(int i=0 ; i<181 ; i++){
-    if((tsPacketBytes[i]==0x43)&&(tsPacketBytes[i+1]==0x6f)&&(tsPacketBytes[i+2]==0x70)&&(tsPacketBytes[i+3]==0x79)){
-      if((tsPacketBytes[i+4]==0x6c)&&(tsPacketBytes[i+5]==0x65)&&(tsPacketBytes[i+6]==0x66)&&(tsPacketBytes[i+7]==0x74)){
+int checkPCR( unsigned int* tsPacketBytes, int packetNumber, int i, unsigned long long* PCR){
+  unsigned long long materialOfPCR=0;
+  if( tsPacketBytes[3+(i*188)]&0x20 ){  //adaptation field controlが11,10のとき
+    if( (tsPacketBytes[4+(i*188)] > 0)&&(tsPacketBytes[5+(i*188)]&0x10) ){      //adaptation field lengthが0以上かつ、PCR flagが1のとき
+      for(int k=0; k<6; k++){
+      materialOfPCR = materialOfPCR << 8;
+      materialOfPCR = materialOfPCR + tsPacketBytes[6+(i*188)+k];
+      }
+      if( (((materialOfPCR&0xFFFFFFFF8000) >> 15)*300) < *PCR){                 //PCRが減少したとき
+        *PCR = ((materialOfPCR&0xFFFFFFFF8000) >> 15)*300;
+        return 1;
+      }else{
+        *PCR = ((materialOfPCR&0xFFFFFFFF8000) >> 15)*300;
+      }
+    }
+  }
+  return 0;
+}
+
+int search_Copyleft(unsigned int* tsPacketBytes, int packetNumber, int i){     //(C,o,p,y,l,e,f,t)==(0x43,0x6f,0x70,0x79,0x6c,0x65,0x66,0x74)
+  for(int j=0; j<(188-7); j++){
+    if((tsPacketBytes[j+(i*188)]==0x43)&&(tsPacketBytes[j+1+(i*188)]==0x6f)&&(tsPacketBytes[j+2+(i*188)]==0x70)&&(tsPacketBytes[j+3+(i*188)]==0x79)){
+      if((tsPacketBytes[j+4+(i*188)]==0x6c)&&(tsPacketBytes[j+5+(i*188)]==0x65)&&(tsPacketBytes[j+6+(i*188)]==0x66)&&(tsPacketBytes[j+7+(i*188)]==0x74)){
         return 1;
       }
     }
@@ -80,6 +107,8 @@ int generateOutputPath( char* input, int chapter, int section, std::string* outp
     std::ofstream errorLog( "error.txt" ,std::ios::app);
     std::cout << "File extension was not found\n";
     errorLog << "File extension was not found\n";
+    errorLog.close();
+    std::this_thread::sleep_for(std::chrono::milliseconds(3000));
     exit (1);
   }
   *output = inputStr.insert(inputStr.rfind(".") , insertStr.str() );
@@ -89,72 +118,157 @@ int generateOutputPath( char* input, int chapter, int section, std::string* outp
 
 
 int main(int argc , char* argv[]){
-  unsigned int* tsPacketBytes = new unsigned int[188];
+  unsigned int* tsPacketBytes = new unsigned int[1880];
   size_t fileSize;
   size_t packetNumber=0;
-  char writeData[188];
+  clock_t startTime = clock();
+  char writeData[1880];
+  int PAT=-1;
+  int PMT_PID=-1;
   int previousPMT_PID=-1;
-  int currentPMT_PID=0;
+  unsigned long long PCR=0;
+  unsigned long long previousPCR=0;
   int chapter=1;
   int section=1;
+  std::vector<int> switchingPoint_chapter(1,-1);
+  std::vector<int> switchingPoint_section(1,-1);
   std::string outputPath;
   std::ifstream  ifs;
-  std::ifstream* ifs_ptr=&ifs;
   std::ofstream  result;
   std::ofstream  output;
+  ifs.open( argv[1] , std::ios::binary );
+  if(!ifs){                             //ファイルが無ければ終了
+    std::ofstream errorLog( "error.txt" , std::ios::app);
+    std::cout << "read Error\n";
+    errorLog << "read Error" << "\n" << "could not read the file.\n";
+    errorLog.close();
+    std::this_thread::sleep_for(std::chrono::milliseconds(3000));
+    exit (1);
+  }
   fileSize = std::filesystem::file_size( argv[1] );
   generateOutputPath(argv[1], chapter, section, &outputPath);
-  ifs.open( argv[1] , std::ios::binary );
-  output.open(outputPath , std::ios::binary | std::ios::app);
   result.open( "result.txt" , std::ios::app );
-  result << "###\n###" << argv[1] << "\n###\n";
+  result << "###\n###" << argv[1] << "\n### " << std::setw(8) << std::setfill('0') << fileSize/1024 << "KB\n";
+  /*
+  ###
+  ###読み込み
+  ###
+  */
+  result << "==Read==\n";
+  std::cout << "Reading\n";
+  while( packetNumber < (fileSize/188) ){          //ファイルの末端に到達で終了
+    loadTsPacket( &ifs, tsPacketBytes, fileSize, packetNumber*188 );
+    std::cout << "\r";
+    std::cout << std::dec << std::setw(3) << std::setfill('0') << (packetNumber*188*100)/fileSize << "%";
 
-  while( (fileSize/188) > packetNumber ){          //ファイルの末端に到達で終了
-    loadTsPacket( ifs_ptr, tsPacketBytes, packetNumber*188 );
-
-    if( ((tsPacketBytes[1]*0x100+tsPacketBytes[2])&0x1FFF)==0 ){  //PID=0、つまりPATパケットのときtrue
-      if ( (packetNumber*188/1024) < 100000){
-        std::cout << "====PAT====\n" << "KiloByte:" << std::setw(6) << std::setfill('0') << std::dec 
-                  << (packetNumber*188)/1024 << "/" << fileSize/1024 << "\n";
-      }else{
-        std::cout << "====PAT====\n" << "MegaByte:" << std::fixed << std::setprecision(1) << std::setw(6) << std::setfill('0') << std::dec 
-                  << (packetNumber*188)/std::pow(1024 , 2) << "/" << fileSize/std::pow(1024,2) << "\n";
+    for(int i=0; i<10; i++){
+      if( (packetNumber+i) < (fileSize/188) ){
+        if( ((tsPacketBytes[1+(i*188)]*0x100+tsPacketBytes[2+(i*188)])&0x1FFF)==0 ){  //PID=0、つまりPATパケットのときtrue
+          if(read_PAT_Info(tsPacketBytes, packetNumber, i, PMT_PID)){
+            switchingPoint_section.push_back(packetNumber + i);
+            std::cout << "\rDetect!(PAT):Packet_" << std::setw(8) << packetNumber+i << ":" << previousPMT_PID << "->" << PMT_PID << "\n";
+            result    << "Detect!(PAT):Packet_" << std::setw(8) << packetNumber+i << ":" << previousPMT_PID << "->" << PMT_PID << "\n";
+          }
+          PAT = packetNumber + i;
+        }
+        previousPMT_PID=PMT_PID;
+        if( checkPCR(tsPacketBytes, packetNumber, i, &PCR) ){
+          switchingPoint_section.push_back(PAT);
+          std::cout << "\rDetect!(PCR):Packet_" << std::setw(8) << packetNumber+i << ":" << previousPCR << "->" << PCR << "\n";
+          result    << "Detect!(PCR):Packet_" << std::setw(8) << packetNumber+i << ":" << previousPCR << "->" << PCR << "\n";
+        }
+        previousPCR=PCR;
+        if(search_Copyleft(tsPacketBytes, packetNumber, i)){
+          switchingPoint_chapter.push_back(packetNumber + i - 2);
+          std::cout << "\rDetect!( C ):Packet_" << std::setw(8) << packetNumber+i << "\n";
+          result    << "Detect!( C ):Packet_" << std::setw(8) << packetNumber+i << "\n";
+        }
       }
-      currentPMT_PID=read_PAT_Info(tsPacketBytes);
-      std::cout << "===========\n";
-
-      if( (previousPMT_PID != currentPMT_PID) && ( previousPMT_PID != -1 ) ){   //1つ前と今のPMT_PIDが異なり、かつpreviousPMT_PIDが初期値ではないときtrue
-        result << std::dec << "packet:" << std::setw(8) << std::setfill('0') << packetNumber << "(Address:" << std::setw(9) << std::setfill('0') << std::hex << packetNumber*188 << ") : ";
-        result << std::dec << "PMT_PID change(" << previousPMT_PID << "->" << currentPMT_PID << ")\n";
-        section = section + 1;
-        output.close();
-        generateOutputPath(argv[1] ,chapter ,section ,&outputPath);
-      }
-      previousPMT_PID=currentPMT_PID;
     }
+    packetNumber=packetNumber+10;
+  }
+  std::cout << "\r100%\n";
+  /*昇順にして重複削除*/
+  std::sort(switchingPoint_section.begin(), switchingPoint_section.end());
+  switchingPoint_section.erase(std::unique(switchingPoint_section.begin(), switchingPoint_section.end()), switchingPoint_section.end());
+  std::sort(switchingPoint_chapter.begin(), switchingPoint_chapter.end());
+  switchingPoint_chapter.erase(std::unique(switchingPoint_chapter.begin(), switchingPoint_chapter.end()), switchingPoint_chapter.end());
 
-    if( (fileSize/188) > (packetNumber+3) ){
-      loadTsPacket( ifs_ptr ,tsPacketBytes ,(packetNumber+2)*188 );    //二つ先のパケットに「Copyleft」がないか検索
-      if(search_Copyleft(tsPacketBytes)==1){
-        result << std::dec << "packet:" << std::setw(8) << std::setfill('0') << (packetNumber-2) << "(Address:" << std::setw(9) << std::setfill('0') << std::hex << (packetNumber-2)*188 << ") : Maybe new program start\n";
-        chapter = chapter + 1;
-        section = 1;
-        output.close();
-        generateOutputPath(argv[1] ,chapter ,section ,&outputPath);
-      }
-    }
+  result << "[Capter]\n";
+  for (int i=1; i != switchingPoint_chapter.size(); i++){
+    result << "  No." << std::setw(2) << i << ":";
+    result << "Packet_" << std::setw(8) << switchingPoint_chapter[i] << "\n";
+  }
+  result << "[Section]\n";
+  for (int i=1; i != switchingPoint_section.size(); i++){
+    result << "  No." << std::setw(2) << i << ":";
+    result << "Packet_" << std::setw(8) << switchingPoint_section[i] << "\n";
+  }
+  switchingPoint_chapter.push_back(-1);
+  switchingPoint_section.push_back(-1);
+  result << std::setw(4) << ( static_cast<double>((clock()-startTime)))/1000  << "s\n";
+  result << std::setw(6) << std::fixed << std::setprecision(2) << (static_cast<double>(fileSize/1024)) / ( static_cast<double>((clock()-startTime)/1000) ) << "KB/s\n";
+  result.close();
+  ifs.clear();
 
-    loadTsPacket( ifs_ptr, tsPacketBytes ,packetNumber*188 );
-    if ( !output.is_open() ){
-      output.open(outputPath , std::ios::binary | std::ios::app);
-    }
-    for(int i=0 ; i<=187 ; i++){      //charに入れてから書き込み
+  std::this_thread::sleep_for(std::chrono::milliseconds(500));
+
+  /*
+  ###
+  ###書き込み
+  ###
+  */
+  output.open(outputPath , std::ios::binary | std::ios::trunc);
+  result.open( "result.txt" , std::ios::app );
+  result << "==Write==\n";
+  std::cout << "Writing\n";
+  startTime=clock();
+  packetNumber=0;
+  int chapterIndex=1;
+  int sectionIndex=1;
+  while( packetNumber < (fileSize/188) ){
+    loadTsPacket( &ifs, tsPacketBytes, fileSize, packetNumber*188);
+    for(int i=0 ; i<1880 ; i++){      //charに入れる
       writeData[i]=tsPacketBytes[i];
     }
-    output.write( writeData ,188 );
-    packetNumber=packetNumber+1;
+    std::cout << "\r";
+    std::cout << std::dec << std::setw(3) << std::setfill('0') << (packetNumber*188*100)/fileSize << "%";
+    if( (10<(switchingPoint_chapter[chapterIndex]-packetNumber)) && (10<(switchingPoint_section[sectionIndex]-packetNumber)) && (10<(fileSize/188-packetNumber)) ){
+      output.write(writeData, 1880);
+    }else{
+      for(int i=0; i<10; i++){
+        if( fileSize/188 <= (packetNumber+i) ){   //末端到達でbreak
+          break;
+        }
+        if( (packetNumber+i)==switchingPoint_chapter[chapterIndex]){          //切り替え地点に到達したとき
+          chapterIndex=chapterIndex+1;
+          chapter=chapter+1;
+          section=1;
+          output.close();
+          generateOutputPath(argv[1] ,chapter ,section ,&outputPath);
+          std::cout << "\r" << "Packet_" << std::setw(8) << packetNumber+i << "->" << outputPath << "\n";
+        }else if( (packetNumber+i)==switchingPoint_section[sectionIndex]){          //切り替え地点に到達したとき
+          sectionIndex=sectionIndex+1;
+          section=section+1;
+          output.close();
+          generateOutputPath(argv[1] ,chapter ,section ,&outputPath);
+          std::cout << "\r" << "Packet_" << std::setw(8) << packetNumber+i << "->" << outputPath << "\n";
+        }
+        if ( !output.is_open() ){
+          output.open(outputPath , std::ios::binary | std::ios::trunc);
+        }
+        output.write(writeData, 188);
+        for(int j=0; j<(1880-188); j++){       //配列内のデータをずらす
+          writeData[j]=writeData[j+188];
+        }
+      }
+    }
+    packetNumber=packetNumber+10;
   }
-
+  std::cout << "\r100%\n";
+  result << std::setw(4) << ( static_cast<double>((clock()-startTime)))/1000  << "s\n";
+  result << std::setw(6) << std::fixed << std::setprecision(2) << (static_cast<double>(fileSize/1024)) / ( static_cast<double>((clock()-startTime)/1000) ) << "KB/s\n";
+  result.close();
   output.close();
   ifs.close();
   result.close();
