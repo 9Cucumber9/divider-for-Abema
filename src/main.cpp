@@ -15,13 +15,13 @@
 #include <stdio.h>
 #include <sys/stat.h>
 
-int loadTsPacket( FILE*, unsigned char*, size_t, size_t);
+int loadTsPacket( FILE*, unsigned char*, unsigned long long, unsigned long long);
 int read_PAT_Info( unsigned char*, int, int, int&);
 int checkPCR( unsigned char*, int, int, unsigned long long*);
 int search_Copyleft( unsigned char*, int, int);
 int generateOutputPath( char*, int, int, std::string*);
 
-int loadTsPacket( FILE* inputFile_ptr, unsigned char* tsPacketBytes, size_t fileSize, size_t seek){
+int loadTsPacket( FILE* inputFile_ptr, unsigned char* tsPacketBytes, unsigned long long fileSize, unsigned long long seek){
   fread(tsPacketBytes, 1, 1880, inputFile_ptr);
   for(int i=0; i<10; i++){
     if( (seek + i*188) < fileSize){
@@ -112,8 +112,8 @@ int generateOutputPath( char* input, int chapter, int section, std::string* outp
 
 int main( int argc, char* argv[]){
   unsigned char* tsPacketBytes = new unsigned char[1880];
-  size_t fileSize;
-  size_t packetNumber=0;
+  unsigned long long fileSize;
+  unsigned long long packetNumber=0;
   double progress;
   clock_t startTime;
   int PAT=0;
