@@ -1,3 +1,5 @@
+#define _FILE_OFFSET_BITS 64
+
 #include <iostream>
 #include <iomanip>
 #include <fstream>
@@ -10,16 +12,17 @@
 #include <chrono>
 #include <vector>
 #include <algorithm>
+#include <stdio.h>
+#include <sys/stat.h>
 
-int loadTsPacket( std::ifstream*, unsigned char*, size_t, size_t);
+int loadTsPacket( FILE*, unsigned char*, size_t, size_t);
 int read_PAT_Info( unsigned char*, int, int, int&);
 int checkPCR( unsigned char*, int, int, unsigned long long*);
 int search_Copyleft( unsigned char*, int, int);
 int generateOutputPath( char*, int, int, std::string*);
 
-int loadTsPacket( std::ifstream* ifs_ptr, unsigned char* tsPacketBytes, size_t fileSize, size_t seek){
-  ifs_ptr->seekg( seek, std::ios::beg );
-  ifs_ptr->read( reinterpret_cast<char*>(tsPacketBytes), 1880);
+int loadTsPacket( FILE* inputFile_ptr, unsigned char* tsPacketBytes, size_t fileSize, size_t seek){
+  fread(tsPacketBytes, 1, 1880, inputFile_ptr);
   for(int i=0; i<10; i++){
     if( (seek + i*188) < fileSize){
       if(tsPacketBytes[0+i*188]!=0x47){               //sync_byteが見つからなければ終了
@@ -111,26 +114,26 @@ int main( int argc, char* argv[]){
   unsigned char* tsPacketBytes = new unsigned char[1880];
   size_t fileSize;
   size_t packetNumber=0;
+  double progress;
   clock_t startTime;
-  int PAT=-1;
+  int PAT=0;
   int PMT_PID=-1;
   int previousPMT_PID=-1;
   unsigned long long PCR=0;
   unsigned long long previousPCR=0;
   int chapter=1;
+  int chapterIndex=1;
   int section=1;
+  int sectionIndex=1;
   std::vector<int> switchingPoint_chapter(1,-1);
   std::vector<int> switchingPoint_section(1,-1);
+  FILE* inputFile_ptr;
+  FILE* outputFile_ptr;
   std::string outputPath;
-  std::ifstream  ifs;
   std::ofstream  result;
-  std::ofstream  output;
-  const int bufSize = 1000000;
-  char buf[bufSize];
-  ifs.rdbuf()-> pubsetbuf( buf, bufSize);
-  output.rdbuf()->pubsetbuf( buf, bufSize);
-  ifs.open( argv[1] , std::ios::binary );
-  if(!ifs){                             //ファイルが無ければ終了
+  inputFile_ptr = fopen( argv[1], "rb");
+  setvbuf(inputFile_ptr, NULL, _IOFBF, 1880);
+  if(inputFile_ptr == NULL){                             //ファイルが無ければ終了
     std::ofstream errorLog( "error.txt", std::ios::app);
     std::cout << "read Error\n";
     errorLog << "read Error" << "\n" << "could not read the file.\n";
@@ -138,9 +141,10 @@ int main( int argc, char* argv[]){
     std::this_thread::sleep_for(std::chrono::milliseconds(3000));
     exit (1);
   }
-  fileSize = std::filesystem::file_size( argv[1] );
-  generateOutputPath(argv[1], chapter, section, &outputPath);
-  result.open( "result.txt", std::ios::app );
+  /*ファイルサイズ取得*/
+  struct stat inputFile_stat;
+  stat(argv[1], &inputFile_stat);
+  fileSize = inputFile_stat.st_size;
 
   /*現時刻取得*/
   time_t rawTime = time(NULL);
@@ -150,6 +154,7 @@ int main( int argc, char* argv[]){
   char dateAndTimeStr[dateAndTimeStrSize];
   strftime( dateAndTimeStr, dateAndTimeStrSize, "%Y/%m/%d(%a) %H:%M:%S", dateAndTime);
 
+  result.open( "result.txt", std::ios::app );
   result << "### " << dateAndTimeStr << "\n### " << argv[1] << "\n### " << fileSize/1024 << "KB\n";
   /*
   ###
@@ -160,11 +165,11 @@ int main( int argc, char* argv[]){
   std::cout << "Reading\n";
   startTime = clock();
   while( packetNumber < (fileSize/188) ){          //ファイルの末端に到達で終了
-    loadTsPacket( &ifs, tsPacketBytes, fileSize, packetNumber*188 );
+    loadTsPacket( inputFile_ptr, tsPacketBytes, fileSize, packetNumber*188 );
     if((packetNumber%500)==0){
-      std::cout << "\r" << std::dec << std::setw(3) << std::setfill('0') << (packetNumber*188*100)/fileSize << "%";
+      progress = static_cast<double>(packetNumber*188)/fileSize;
+      std::cout << "\r" << std::dec << std::setw(6) << std::setfill('0') << std::fixed << std::setprecision(2) << progress*100 << "%";
     }
-
     for(int i=0; i<10; i++){
       if( (packetNumber+i) < (fileSize/188) ){
         if( ((tsPacketBytes[1+(i*188)]*0x100+tsPacketBytes[2+(i*188)])&0x1FFF)==0 ){  //PID=0、つまりPATパケットのときtrue
@@ -182,7 +187,7 @@ int main( int argc, char* argv[]){
           result    << "Packet:" << std::setw(8) << std::setfill(' ') << packetNumber+i << "; [PCR]" << std::setw(13) << previousPCR << "->" << std::setw(13) << PCR << "\n";
         }
         previousPCR=PCR;
-        if(search_Copyleft(tsPacketBytes, packetNumber, i)){
+        if(search_Copyleft(tsPacketBytes, packetNumber, i) && ((packetNumber+i)>2)){
           switchingPoint_chapter.push_back(packetNumber + i - 2);
           std::cout << "\rPacket:" << std::setw(8) << std::setfill(' ') << packetNumber+i << "; [Copyleft]\n";
           result    << "Packet:" << std::setw(8) << std::setfill(' ') << packetNumber+i << "; [Copyleft]\n";
@@ -191,7 +196,7 @@ int main( int argc, char* argv[]){
     }
     packetNumber=packetNumber+10;
   }
-  std::cout << "\r100%\n";
+  std::cout << "\r100.00%\n";
   /*昇順にして重複削除*/
   std::sort(switchingPoint_section.begin(), switchingPoint_section.end());
   switchingPoint_section.erase(std::unique(switchingPoint_section.begin(), switchingPoint_section.end()), switchingPoint_section.end());
@@ -210,10 +215,9 @@ int main( int argc, char* argv[]){
   }
   switchingPoint_chapter.push_back(-1);
   switchingPoint_section.push_back(-1);
-  result << std::setw(7) << std::fixed << std::setprecision(2) << ( static_cast<double>((clock()-startTime)))/1000  << "s\n";
+  result << std::setw(7) << std::fixed << std::setprecision(2) << (static_cast<double>((clock()-startTime)))/1000  << "s\n";
   result << std::setw(6) << std::fixed << std::setprecision(2) << (static_cast<double>(fileSize/1024)) / ( static_cast<double>((clock()-startTime)/1000) ) << "KB/s\n";
   result.close();
-  ifs.clear();
 
   std::this_thread::sleep_for(std::chrono::milliseconds(500));
 
@@ -222,46 +226,61 @@ int main( int argc, char* argv[]){
   ###書き込み
   ###
   */
-  output.open( outputPath, std::ios::binary | std::ios::trunc);
+  generateOutputPath(argv[1], chapter, section, &outputPath);
+  outputFile_ptr = fopen( outputPath.c_str(), "wb");
+  setvbuf(outputFile_ptr, NULL, _IOFBF, 1880);
+  rewind(inputFile_ptr);
   result.open( "result.txt", std::ios::app );
   result << "==Write==\n";
   std::cout << "Writing\n";
   startTime=clock();
   packetNumber=0;
-  int chapterIndex=1;
-  int sectionIndex=1;
   while( packetNumber < (fileSize/188) ){
-    loadTsPacket( &ifs, tsPacketBytes, fileSize, packetNumber*188);
+    loadTsPacket( inputFile_ptr, tsPacketBytes, fileSize, packetNumber*188);
     if((packetNumber%500)==0){
-      std::cout << "\r" << std::dec << std::setw(3) << std::setfill('0') << (packetNumber*188*100)/fileSize << "%";
+      progress = static_cast<double>(packetNumber*188)/fileSize;
+      std::cout << "\r" << std::dec << std::setw(6) << std::setfill('0') << std::fixed << std::setprecision(2) << progress*100 << "%";
     }
+
     if( (10<(switchingPoint_chapter[chapterIndex]-packetNumber)) && (10<(switchingPoint_section[sectionIndex]-packetNumber)) && (10<(fileSize/188-packetNumber)) ){
-      output.write(reinterpret_cast<char*>(tsPacketBytes), 1880);
+    fwrite(tsPacketBytes, 1, 1880, outputFile_ptr);
     }else{
       for(int i=0; i<10; i++){
         if( fileSize/188 <= (packetNumber+i) ){   //末端到達でbreak
           break;
         }
-        if( (packetNumber+i)==switchingPoint_chapter[chapterIndex]){          //切り替え地点に到達したとき
+        if( (packetNumber+i)==switchingPoint_chapter[chapterIndex] && (packetNumber+i)==switchingPoint_section[sectionIndex] ){         //切り替え地点に到達したとき
+          fclose(outputFile_ptr); 
+          chapterIndex=chapterIndex+1;
+          sectionIndex=sectionIndex+1;
+          chapter=chapter+1;
+          section=1;
+          generateOutputPath( argv[1], chapter, section, &outputPath);
+          std::cout << "\r" << "Packet:" << std::setw(8) << std::setfill(' ') << packetNumber+i << " -> " << outputPath << "\n";
+          result    << "Packet:" << std::setw(8) << std::setfill(' ') << packetNumber+i << " -> " << outputPath << "\n";
+          outputFile_ptr = fopen( outputPath.c_str(), "wb");
+          setvbuf(outputFile_ptr, NULL, _IOFBF, 1880);
+        }else if( (packetNumber+i)==switchingPoint_chapter[chapterIndex]){          //切り替え地点に到達したとき
+          fclose(outputFile_ptr);
           chapterIndex=chapterIndex+1;
           chapter=chapter+1;
           section=1;
-          output.close();
           generateOutputPath( argv[1], chapter, section, &outputPath);
           std::cout << "\r" << "Packet:" << std::setw(8) << std::setfill(' ') << packetNumber+i << " -> " << outputPath << "\n";
           result    << "Packet:" << std::setw(8) << std::setfill(' ') << packetNumber+i << " -> " << outputPath << "\n";
+          outputFile_ptr = fopen( outputPath.c_str(), "wb");
+          setvbuf(outputFile_ptr, NULL, _IOFBF, 1880);
         }else if( (packetNumber+i)==switchingPoint_section[sectionIndex]){          //切り替え地点に到達したとき
+          fclose(outputFile_ptr);
           sectionIndex=sectionIndex+1;
           section=section+1;
-          output.close();
           generateOutputPath( argv[1], chapter, section, &outputPath);
           std::cout << "\r" << "Packet:" << std::setw(8) << std::setfill(' ') << packetNumber+i << " -> " << outputPath << "\n";
           result    << "Packet:" << std::setw(8) << std::setfill(' ') << packetNumber+i << " -> " << outputPath << "\n";
+          outputFile_ptr = fopen( outputPath.c_str(), "wb");
+          setvbuf(outputFile_ptr, NULL, _IOFBF, 1880);
         }
-        if ( !output.is_open() ){
-          output.open( outputPath, std::ios::binary | std::ios::trunc);
-        }
-        output.write(reinterpret_cast<char*>(tsPacketBytes), 188);
+        fwrite(tsPacketBytes, 1, 188, outputFile_ptr);
         for(int j=0; j<(1880-188); j++){       //配列内のデータをずらす
           tsPacketBytes[j]=tsPacketBytes[j+188];
         }
@@ -269,13 +288,11 @@ int main( int argc, char* argv[]){
     }
     packetNumber=packetNumber+10;
   }
-  std::cout << "\r100%\n";
+  std::cout << "\r100.00%\n";
   result << std::setw(7) << std::fixed << std::setprecision(2) << ( static_cast<double>((clock()-startTime)))/1000  << "s\n";
   result << std::setw(6) << std::fixed << std::setprecision(2) << (static_cast<double>(fileSize/1024)) / ( static_cast<double>((clock()-startTime)/1000) ) << "KB/s\n\n";
   result.close();
-  output.close();
-  ifs.close();
-  result.close();
+  fclose(outputFile_ptr);
   delete[] tsPacketBytes;
   return 0;
 }
