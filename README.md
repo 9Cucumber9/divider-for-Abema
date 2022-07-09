@@ -1,4 +1,4 @@
-# TS-switching-detector<br>
+# divider-for-streamlink<br>
 streamlinkでAbemaの生放送を録画してできてしまった扱いづらいファイルを番組内容が切り替わるタイミングで切り分けて出力します。<br>
 (検知できるもの)本編->広告、広告->本編、第一話->第二話、アニメA->アニメB<br>
 
